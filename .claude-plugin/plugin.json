@@ -1,0 +1,14 @@
+{
+  "name": "extension-assessment",
+  "version": "1.0.0",
+  "description": "Systematic TYPO3 extension assessment against all skills with scripted verification + domain-batched LLM review",
+  "repository": "https://github.com/netresearch/extension-assessment-skill",
+  "license": "MIT",
+  "author": {
+    "name": "Netresearch DTT GmbH",
+    "email": "info@netresearch.de"
+  },
+  "skills": [
+    "./skills/extension-assessment"
+  ]
+}

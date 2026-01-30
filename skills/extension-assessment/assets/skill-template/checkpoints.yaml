@@ -1,0 +1,66 @@
+# Checkpoints for my-skill
+# This file is auto-discovered by the extension-assessment skill
+#
+# Schema version: 1
+# See: ~/.claude/skills/extension-assessment/references/checkpoints-schema.md
+
+version: 1
+skill_id: my-skill-name
+
+mechanical:
+  # File existence checks
+  - id: MS-01
+    type: file_exists
+    target: README.md
+    severity: error
+    desc: "README.md must exist"
+
+  # Content checks (literal string)
+  - id: MS-02
+    type: contains
+    target: README.md
+    pattern: "## Installation"
+    severity: warning
+    desc: "README should have Installation section"
+
+  # Regex checks (supports globs)
+  - id: MS-03
+    type: regex
+    target: .github/workflows/*.yml
+    pattern: "runs-on:"
+    severity: error
+    desc: "Workflow must specify runner"
+
+  # JSON path checks
+  - id: MS-04
+    type: json_path
+    target: composer.json
+    pattern: '.require["php"]'
+    severity: error
+    desc: "composer.json must specify PHP version"
+
+  # Command checks
+  - id: MS-05
+    type: command
+    pattern: "composer validate --strict"
+    severity: error
+    desc: "composer.json must be valid"
+
+llm_reviews:
+  # Subjective checks requiring LLM judgment
+  - id: MS-10
+    domain: repo-health
+    rubric: references/llm-rubric.md#structure-check
+    severity: warning
+    desc: "Verify documentation structure follows standards"
+
+  # Inline prompt (alternative to rubric file)
+  - id: MS-11
+    domain: code-quality
+    prompt: |
+      Check if the code follows these patterns:
+      1. Uses dependency injection
+      2. Has type declarations
+      3. Follows PSR-12
+    severity: info
+    desc: "Code should follow modern PHP patterns"
