@@ -17,8 +17,14 @@
 #       target: README.md
 #       severity: error
 #       desc: "..."
+#       scope: extension|application|library  # optional
 #   llm_reviews:
 #     - ... (skipped by this script)
+#
+# Supports:
+#   - Brace expansion in targets: {phpstan.neon,Build/phpstan.neon}
+#   - Glob patterns: Classes/**/*.php
+#   - Scope filtering: skip checks not matching project type
 
 set -euo pipefail
 
@@ -42,6 +48,19 @@ fi
 
 cd "$PROJECT_ROOT"
 
+# Detect project type (extension, application, or library)
+detect_project_type() {
+    if [[ -f "ext_emconf.php" ]] || grep -q '"typo3-cms-extension"' composer.json 2>/dev/null; then
+        echo "extension"
+    elif [[ -f "Dockerfile" ]] || [[ -f "docker-compose.yml" ]] || [[ -f "public/index.php" ]]; then
+        echo "application"
+    else
+        echo "library"
+    fi
+}
+
+PROJECT_TYPE=$(detect_project_type)
+
 # Colors for terminal output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -64,18 +83,61 @@ run_checkpoint() {
     local pattern="${4:-}"
     local severity="${5:-error}"
     local desc="${6:-}"
+    local scope="${7:-}"
 
     local status="skip"
     local evidence=""
 
+    # Check scope - skip if doesn't match project type
+    if [[ -n "$scope" ]] && [[ "$scope" != "$PROJECT_TYPE" ]]; then
+        status="skip"
+        evidence="Scope '$scope' doesn't match project type '$PROJECT_TYPE'"
+        # Update counts and output
+        ((SKIP_COUNT++)) || true
+        echo -e "${YELLOW}○${NC} [$id] $desc - SKIPPED (scope: $scope)"
+        evidence="${evidence//\"/\\\"}"
+        RESULTS+=("{\"id\":\"$id\",\"status\":\"$status\",\"severity\":\"$severity\",\"evidence\":\"$evidence\"}")
+        return
+    fi
+
     case "$type" in
         file_exists)
-            if [[ -f "$target" ]]; then
+            # Support brace expansion: {file1,file2,file3}
+            local found=false
+            local found_file=""
+            if [[ "$target" == *"{"*"}"* ]]; then
+                # Brace expansion - check each alternative
+                eval "local alternatives=($target)"
+                for alt in "${alternatives[@]}"; do
+                    if [[ -f "$alt" ]] || [[ -d "$alt" ]]; then
+                        found=true
+                        found_file="$alt"
+                        break
+                    fi
+                done
+            elif [[ "$target" == *"*"* ]]; then
+                # Glob pattern
+                shopt -s nullglob globstar
+                local files=($target)
+                shopt -u nullglob globstar
+                if [[ ${#files[@]} -gt 0 ]]; then
+                    found=true
+                    found_file="${files[0]}"
+                fi
+            else
+                # Simple path - check file or directory
+                if [[ -f "$target" ]] || [[ -d "$target" ]]; then
+                    found=true
+                    found_file="$target"
+                fi
+            fi
+
+            if $found; then
                 status="pass"
-                evidence="File exists: $target"
+                evidence="Found: $found_file"
             else
                 status="fail"
-                evidence="File not found: $target"
+                evidence="Not found: $target"
             fi
             ;;
         file_not_exists)
@@ -201,6 +263,7 @@ echo "========================================"
 echo "Extension Assessment - Scripted Checks"
 echo "========================================"
 echo "Project: $PROJECT_ROOT"
+echo -e "Type: ${BLUE}$PROJECT_TYPE${NC}"
 echo "Checkpoints: $CHECKPOINT_FILE"
 echo "----------------------------------------"
 
@@ -212,6 +275,7 @@ current_target=""
 current_pattern=""
 current_severity="error"
 current_desc=""
+current_scope=""
 in_mechanical_section=false
 in_llm_section=false
 
@@ -247,7 +311,7 @@ while IFS= read -r line; do
     if [[ "$line" =~ ^llm_reviews:[[:space:]]*$ ]]; then
         # Process any pending checkpoint before switching sections
         if [[ -n "$current_id" ]]; then
-            run_checkpoint "$current_id" "$current_type" "$current_target" "$current_pattern" "$current_severity" "$current_desc"
+            run_checkpoint "$current_id" "$current_type" "$current_target" "$current_pattern" "$current_severity" "$current_desc" "$current_scope"
             current_id=""
         fi
         in_mechanical_section=false
@@ -264,7 +328,7 @@ while IFS= read -r line; do
     if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*id:[[:space:]]*(.+)$ ]]; then
         # New checkpoint - process previous if exists
         if [[ -n "$current_id" ]]; then
-            run_checkpoint "$current_id" "$current_type" "$current_target" "$current_pattern" "$current_severity" "$current_desc"
+            run_checkpoint "$current_id" "$current_type" "$current_target" "$current_pattern" "$current_severity" "$current_desc" "$current_scope"
         fi
         current_id="${BASH_REMATCH[1]}"
         current_type=""
@@ -272,22 +336,32 @@ while IFS= read -r line; do
         current_pattern=""
         current_severity="error"
         current_desc=""
+        current_scope=""
     elif [[ "$line" =~ ^[[:space:]]*type:[[:space:]]*(.+)$ ]]; then
         current_type="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^[[:space:]]*target:[[:space:]]*(.+)$ ]]; then
         current_target="${BASH_REMATCH[1]}"
-    elif [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*[\"\']*([^\"\']+)[\"\']*$ ]]; then
+    elif [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*\'(.+)\'$ ]]; then
+        # Single-quoted pattern (may contain internal double quotes)
+        current_pattern="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*\"(.+)\"$ ]]; then
+        # Double-quoted pattern (may contain internal single quotes)
+        current_pattern="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*([^[:space:]].*)$ ]]; then
+        # Unquoted pattern
         current_pattern="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^[[:space:]]*severity:[[:space:]]*(.+)$ ]]; then
         current_severity="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^[[:space:]]*desc:[[:space:]]*[\"\']*(.+)[\"\']*$ ]]; then
         current_desc="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^[[:space:]]*scope:[[:space:]]*(.+)$ ]]; then
+        current_scope="${BASH_REMATCH[1]}"
     fi
 done < "$CHECKPOINT_FILE"
 
 # Process last checkpoint if still in mechanical section
 if [[ -n "$current_id" ]] && $in_mechanical_section; then
-    run_checkpoint "$current_id" "$current_type" "$current_target" "$current_pattern" "$current_severity" "$current_desc"
+    run_checkpoint "$current_id" "$current_type" "$current_target" "$current_pattern" "$current_severity" "$current_desc" "$current_scope"
 fi
 
 echo "----------------------------------------"
