@@ -150,15 +150,35 @@ run_checkpoint() {
             fi
             ;;
         contains)
-            if [[ -f "$target" ]] && grep -q "$pattern" "$target" 2>/dev/null; then
+            # Support brace expansion for target
+            local files_to_check=()
+            if [[ "$target" == *"{"*"}"* ]]; then
+                eval "files_to_check=($target)"
+            else
+                files_to_check=("$target")
+            fi
+
+            local found=false
+            local checked_file=""
+            for f in "${files_to_check[@]}"; do
+                if [[ -f "$f" ]]; then
+                    checked_file="$f"
+                    if grep -q "$pattern" "$f" 2>/dev/null; then
+                        found=true
+                        break
+                    fi
+                fi
+            done
+
+            if $found; then
                 status="pass"
-                evidence="Pattern found in $target"
-            elif [[ ! -f "$target" ]]; then
+                evidence="Pattern found in $checked_file"
+            elif [[ -z "$checked_file" ]]; then
                 status="fail"
                 evidence="Target file not found: $target"
             else
                 status="fail"
-                evidence="Pattern not found in $target"
+                evidence="Pattern not found in $checked_file"
             fi
             ;;
         not_contains)
@@ -174,23 +194,30 @@ run_checkpoint() {
             fi
             ;;
         regex)
-            # Handle glob patterns in target
+            # Handle glob patterns and brace expansion in target
             local files=()
-            if [[ "$target" == *"*"* ]]; then
+            if [[ "$target" == *"{"*"}"* ]]; then
+                # Brace expansion
+                eval "files=($target)"
+            elif [[ "$target" == *"*"* ]]; then
                 # Glob pattern - expand it
-                shopt -s nullglob
+                shopt -s nullglob globstar
                 files=($target)
-                shopt -u nullglob
+                shopt -u nullglob globstar
             else
                 files=("$target")
             fi
 
             local found=false
+            local checked_file=""
             for f in "${files[@]}"; do
-                if [[ -f "$f" ]] && grep -qE "$pattern" "$f" 2>/dev/null; then
-                    found=true
-                    evidence="Pattern found in $f"
-                    break
+                if [[ -f "$f" ]]; then
+                    checked_file="$f"
+                    if grep -qE "$pattern" "$f" 2>/dev/null; then
+                        found=true
+                        evidence="Pattern found in $f"
+                        break
+                    fi
                 fi
             done
 
@@ -199,10 +226,13 @@ run_checkpoint() {
             else
                 if [[ ${#files[@]} -eq 0 ]]; then
                     status="fail"
-                    evidence="No files match glob pattern: $target"
+                    evidence="No files match pattern: $target"
+                elif [[ -z "$checked_file" ]]; then
+                    status="fail"
+                    evidence="Target file not found: $target"
                 else
                     status="fail"
-                    evidence="Pattern not found in $target"
+                    evidence="Pattern not found in $checked_file"
                 fi
             fi
             ;;
@@ -339,7 +369,14 @@ while IFS= read -r line; do
         current_scope=""
     elif [[ "$line" =~ ^[[:space:]]*type:[[:space:]]*(.+)$ ]]; then
         current_type="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^[[:space:]]*target:[[:space:]]*\"(.+)\"$ ]]; then
+        # Double-quoted target
+        current_target="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^[[:space:]]*target:[[:space:]]*\'(.+)\'$ ]]; then
+        # Single-quoted target
+        current_target="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^[[:space:]]*target:[[:space:]]*(.+)$ ]]; then
+        # Unquoted target
         current_target="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*\'(.+)\'$ ]]; then
         # Single-quoted pattern (may contain internal double quotes)
